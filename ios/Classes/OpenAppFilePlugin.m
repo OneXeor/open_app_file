@@ -7,7 +7,6 @@ static NSString *const CHANNEL_NAME = @"open_app_file";
 
 @implementation OpenAppFilePlugin{
     FlutterResult _result;
-    UIViewController *_viewController;
     UIDocumentInteractionController *_documentController;
     UIDocumentInteractionController *_interactionController;
 }
@@ -16,18 +15,8 @@ static NSString *const CHANNEL_NAME = @"open_app_file";
     FlutterMethodChannel* channel = [FlutterMethodChannel
                                      methodChannelWithName:CHANNEL_NAME
                                      binaryMessenger:[registrar messenger]];
-    UIViewController *viewController =
-    [UIApplication sharedApplication].delegate.window.rootViewController;
-    OpenAppFilePlugin* instance = [[OpenAppFilePlugin alloc] initWithViewController:viewController];
+    OpenAppFilePlugin* instance = [[OpenAppFilePlugin alloc] init];
     [registrar addMethodCallDelegate:instance channel:channel];
-}
-
-- (instancetype)initWithViewController:(UIViewController *)viewController {
-    self = [super init];
-    if (self) {
-        _viewController = viewController;
-    }
-    return self;
 }
 
 - (void)handleMethodCall:(FlutterMethodCall*)call result:(FlutterResult)result {
@@ -42,10 +31,18 @@ static NSString *const CHANNEL_NAME = @"open_app_file";
         if(!isBlank){
             _documentController.UTI = uti;
         }
+        UIViewController *presenter = [self topViewController];
+        if (presenter == nil) {
+            [self finishWithMessage:@"No view controller to present the file from" type:@-4];
+            return;
+        }
         @try {
             BOOL previewSucceeded = [_documentController presentPreviewAnimated:YES];
             if(!previewSucceeded){
-                [_documentController presentOpenInMenuFromRect:CGRectMake(500,20,100,100) inView:_viewController.view animated:YES];
+                BOOL menuShown = [_documentController presentOpenInMenuFromRect:CGRectMake(500,20,100,100) inView:presenter.view animated:YES];
+                if (!menuShown) {
+                    [self finishWithMessage:@"No app can open this file" type:@-1];
+                }
             }
         }@catch (NSException *exception) {
             NSDictionary * dict = @{@"message":@"File opened incorrectly。", @"type":@-4};
@@ -75,7 +72,40 @@ static NSString *const CHANNEL_NAME = @"open_app_file";
 }
 
 - (UIViewController *)documentInteractionControllerViewControllerForPreview:(UIDocumentInteractionController *)controller {
-    return  _viewController;
+    return [self topViewController];
+}
+
+// Resolved on every call: the host app may build or replace its window and root view controller
+// after plugins are registered, so a controller captured at registration can be nil or detached.
+- (UIViewController *)topViewController {
+    UIWindow *window = [UIApplication sharedApplication].delegate.window;
+    if (window == nil) {
+        for (UIScene *scene in [UIApplication sharedApplication].connectedScenes) {
+            if ([scene isKindOfClass:[UIWindowScene class]]) {
+                for (UIWindow *candidate in ((UIWindowScene *)scene).windows) {
+                    if (candidate.isKeyWindow) {
+                        window = candidate;
+                    }
+                }
+            }
+        }
+    }
+    UIViewController *controller = window.rootViewController;
+    while (controller.presentedViewController != nil && !controller.presentedViewController.isBeingDismissed) {
+        controller = controller.presentedViewController;
+    }
+    return controller;
+}
+
+- (void)finishWithMessage:(NSString *)message type:(NSNumber *)type {
+    if (_result == nil) {
+        return;
+    }
+    NSDictionary * dict = @{@"message":message, @"type":type};
+    NSData * jsonData = [NSJSONSerialization dataWithJSONObject:dict options:NSJSONWritingPrettyPrinted error:nil];
+    NSString * json = [[NSString alloc] initWithData:jsonData encoding:NSUTF8StringEncoding];
+    _result(json);
+    _result = nil;
 }
 
 - (BOOL) isBlankString:(NSString *)string {
